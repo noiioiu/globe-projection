@@ -7,7 +7,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Main (main) where
+module Main where
 
 import Codec.Picture
 import Control.Applicative
@@ -309,8 +309,11 @@ addOpP = charP '+' *> pure (+) <|> charP '-' *> pure (-)
 multOpP :: (Fractional a) => Parser (a -> a -> a)
 multOpP = charP '*' *> pure (*) <|> charP '/' *> pure (/)
 
-funcOpP :: (Floating a) => Parser (a -> a)
-funcOpP =
+powerOpP :: (Floating a) => Parser (a -> a -> a)
+powerOpP = charP '^' *> pure (**)
+
+funcP :: (Floating a) => Parser (a -> a)
+funcP =
   stringP "exp" *> pure exp
     <|> stringP "log" *> pure log
     <|> stringP "sqrt" *> pure sqrt
@@ -351,13 +354,16 @@ hSummandP :: (RealFloat a, Read a) => Parser (Quaternion a)
 hSummandP = chainl1 hFactorP multOpP
 
 hFactorP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hFactorP =
+hFactorP = chainr1 hAtomP powerOpP
+
+hAtomP :: (RealFloat a, Read a) => Parser (Quaternion a)
+hAtomP =
   skipSpaces $
     hUnitP
       <|> hImagP
       <|> fmap (flip Quaternion zero) numP
+      <|> funcP <*> hAtomP
       <|> constP
-      <|> funcOpP <*> hExprP
       <|> (charP '(' *> hExprP <* charP ')')
 
 data GlobeOptions = GlobeOptions
