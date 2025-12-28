@@ -310,7 +310,7 @@ multOpP :: (Fractional a) => Parser (a -> a -> a)
 multOpP = charP '*' *> pure (*) <|> charP '/' *> pure (/)
 
 powerOpP :: (Floating a) => Parser (a -> a -> a)
-powerOpP = charP '^' *> pure (**)
+powerOpP = (stringP "^" <|> stringP "**") *> pure (**)
 
 funcP :: (Floating a) => Parser (a -> a)
 funcP =
