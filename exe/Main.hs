@@ -103,19 +103,21 @@ sampleBicubic img@Image {imageHeight, imageWidth, imageData} x y =
 
 data ProjectionMode = Gnomonic | EqualArea | Conformal deriving (Show, Eq, Ord)
 
+data InterpolationMode = Bilinear | Bicubic deriving (Show, Eq, Ord)
+
 projectCubeSphere ::
   ( Pixel px,
     Integral (PixelBaseComponent px),
     Bounded (PixelBaseComponent px)
   ) =>
-  (Image px -> Double -> Double -> px) -> ProjectionMode -> Int -> Int -> V3 Double -> V3 Double -> V3 Double -> Image px -> Image px
+  InterpolationMode -> ProjectionMode -> Int -> Int -> V3 Double -> V3 Double -> V3 Double -> Image px -> Image px
 projectCubeSphere int proj xres yres c00 c01 c10 img =
   generateImage
     ( \a b ->
         let a' = fromIntegral a / fromIntegral xres
             b' = fromIntegral b / fromIntegral yres
             (phi, theta) = case proj of { Gnomonic -> gnomonic; EqualArea -> equalArea; Conformal -> conformal } c00 c01 c10 a' b'
-         in int img phi theta
+         in case int of { Bilinear -> sampleBilinear; Bicubic -> sampleBicubic } img phi theta
     )
     xres
     yres
@@ -358,6 +360,11 @@ charP = predP . (==)
 stringP :: String -> Parser String
 stringP = traverse charP
 
+eof :: Parser ()
+eof = L.do
+  s <- get @_ @Parser
+  if null s then pure () else empty
+
 numP :: (Read a) => Parser a
 numP = L.do
   sgn <- optional $ charP '-'
@@ -442,13 +449,14 @@ hExprP :: (RealFloat a, Read a) => Parser (Quaternion a)
 hExprP = chainl1 hSummandP addOpP
   where
     hSummandP = chainl1 hFactorP multOpP
-    hFactorP = chainr1 hAtomP powerOpP
-    hAtomP =
+    hFactorP = chainr1 (chainr1 hOperandP powerOpP) (pure (*) <* many (predP isSpace))
+    hOperandP =
       skipSpaces $
         hUnitP
-          <|> hImagP
+          <|> hUnitP
+          <|> fmap (flip Quaternion zero . (* (pi / 180))) numP <* many (predP isSpace) <* charP 'd'
           <|> fmap (flip Quaternion zero) numP
-          <|> funcP <*> hAtomP
+          <|> funcP <*> hOperandP
           <|> constP
           <|> (charP '(' *> hExprP <* charP ')')
 
@@ -457,7 +465,8 @@ data GlobeOptions = GlobeOptions
     outputPath :: FilePath,
     mSize :: Maybe Int,
     mRotation :: Maybe (Quaternion Double),
-    mProjectionMode :: Maybe ProjectionMode
+    mProjectionMode :: Maybe ProjectionMode,
+    mInterpolationMode :: Maybe InterpolationMode
   }
 
 parseGlobeOptions :: O.ParserInfo GlobeOptions
@@ -473,13 +482,17 @@ parseGlobeOptions =
           fmap (>>= readMaybe) . O.optional . O.strOption $
             O.short 's' <> O.long "size" <> O.metavar "SIZE" <> O.help "Output image size"
         mRotation <-
-          fmap (>>= runParser hExprP) . O.optional . O.strOption $
+          fmap (>>= runParser (hExprP <* eof)) . O.optional . O.strOption $
             O.short 'r' <> O.long "rotation" <> O.metavar "ROTATION" <> O.help "Quaternion expression for globe rotation"
         mProjectionMode <-
           O.optional $
             (O.flag' Gnomonic $ O.long "gnomonic" <> O.help "Use gnomonic projection")
               <|> (O.flag' EqualArea $ O.long "equal-area" <> O.help "Use equal-area projection")
               <|> (O.flag' Conformal $ O.long "conformal" <> O.help "Use conformal projection")
+        mInterpolationMode <-
+          O.optional $
+            (O.flag' Bilinear $ O.long "bilinear" <> O.help "Use bilinear interpolation")
+              <|> (O.flag' Bicubic $ O.long "bicubic" <> O.help "Use bicubic interpolation")
         pure GlobeOptions {..}
    in O.info (parser O.<**> O.helper) (O.fullDesc <> O.progDesc "Create a cube-shaped globe from INPUT")
 
@@ -489,6 +502,7 @@ main = do
   let size = fromMaybe 512 mSize
       rotation = fromMaybe 1 mRotation
       projectionMode = fromMaybe Gnomonic mProjectionMode
+      interpolationMode = fromMaybe Bicubic mInterpolationMode
       cube = genCube rotation
   print rotation
   print projectionMode
@@ -496,5 +510,5 @@ main = do
   forM_ cubeFaces \face -> do
     let globeSample =
           either error id $
-            dynamicPixelMapI (uncurry3 (projectCubeSphere sampleBicubic projectionMode size size) . mapTriple (cube !!) $ faceToVertices face) globe
+            dynamicPixelMapI (uncurry3 (projectCubeSphere interpolationMode projectionMode size size) . mapTriple (cube !!) $ faceToVertices face) globe
     saveTiffImage (outputPath ++ '_' : cubeComponentsToString face <.> "tiff") globeSample
