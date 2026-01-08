@@ -7,16 +7,20 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Main where
+module Main (main) where
+
+-- This should probably be split into multiple files
 
 import Codec.Picture
 import Control.Applicative
-import Control.Lens hiding ((<.>))
+import Control.Lens hiding (uncons, (<.>))
 import Control.Monad
 import Control.Monad.Action
 import Control.Monad.Action.Left qualified as L
 import Control.Monad.State
 import Data.Char
+import Data.Complex
+import Data.List
 import Data.Maybe
 import Data.Ord
 import Data.Vector.Storable qualified as V
@@ -97,26 +101,26 @@ sampleBicubic img@Image {imageHeight, imageWidth, imageData} x y =
       template = pixelAt img 0 0
    in mixWith (const . const . sampleComponent) template template
 
-type ProjectionMode = (V3 Double -> V3 Double -> V3 Double -> Double -> Double -> (Double, Double))
+data ProjectionMode = Gnomonic | EqualArea | Conformal deriving (Show, Eq, Ord)
 
 projectCubeSphere ::
   ( Pixel px,
     Integral (PixelBaseComponent px),
     Bounded (PixelBaseComponent px)
   ) =>
-  ProjectionMode -> Int -> Int -> V3 Double -> V3 Double -> V3 Double -> Image px -> Image px
-projectCubeSphere f xres yres c00 c01 c10 img =
+  (Image px -> Double -> Double -> px) -> ProjectionMode -> Int -> Int -> V3 Double -> V3 Double -> V3 Double -> Image px -> Image px
+projectCubeSphere int proj xres yres c00 c01 c10 img =
   generateImage
     ( \a b ->
         let a' = fromIntegral a / fromIntegral xres
             b' = fromIntegral b / fromIntegral yres
-            (phi, theta) = f c00 c01 c10 a' b'
-         in sampleBicubic img phi theta
+            (phi, theta) = case proj of { Gnomonic -> gnomonic; EqualArea -> equalArea; Conformal -> conformal } c00 c01 c10 a' b'
+         in int img phi theta
     )
     xres
     yres
 
-gnomonic :: ProjectionMode
+gnomonic :: V3 Double -> V3 Double -> V3 Double -> Double -> Double -> (Double, Double)
 gnomonic c00 c01 c10 a b =
   let v0 = c01 .-. c00
       v1 = c10 .-. c00
@@ -131,7 +135,7 @@ tMap x y
   | nearZero x && nearZero y = (0, 0)
   | abs y <= abs x =
       let a = (y * pi) / (12 * x)
-          denom = sqrt (sqrt 2 - cos a)
+          denom = sqrt $ sqrt 2 - cos a
           s = (sqrt (sqrt 2) * x) / sqrt (pi / 6)
           x1 = s * ((sqrt 2 * cos a) - 1) / denom
           y1 = s * (sqrt 2 * sin a) / denom
@@ -150,24 +154,117 @@ invLambert x y =
       k = sqrt $ 1 - r2 / 4
    in V3 (x * k) (y * k) (1 - r2 / 2)
 
-roscaPlonka :: ProjectionMode
-roscaPlonka c00 c01 c10 a b =
+-- Roşca-Plonka equal-area projection: https://num.math.uni-goettingen.de/plonka/pdfs/cubsphere3.pdf
+equalArea :: V3 Double -> V3 Double -> V3 Double -> Double -> Double -> (Double, Double)
+equalArea c00 c01 c10 a b =
   let v0 = c01 .-. c00
       v1 = c10 .-. c00
-
       e0 = normalize v0
-      n = normalize $ v1 `cross` e0
-      e1 = normalize $ n `cross` e0
-
+      e1 = normalize v1
+      n = normalize $ c00 .+^ (0.5 *^ v0) .+^ (0.5 *^ v1)
       toGlobal (V3 lx ly lz) = (lx *^ e0) .+^ (ly *^ e1) .+^ (lz *^ n)
-
       x = (2 * a - 1) * sqrt (pi / 6)
       y = (2 * b - 1) * sqrt (pi / 6)
       (xL, yL) = tMap x y
       V3 gx gy gz = normalize . toGlobal $ invLambert xL yL
       phi = asin gz
       theta = atan2 gx gy
-   in (-phi, theta)
+   in (phi, theta)
+
+aSeries :: (Fractional a) => a -> a
+aSeries z =
+  z
+    * foldr
+      ((. (* z)) . (+))
+      0
+      [ 1.47713062600964,
+        -0.38183510510174,
+        -0.05573058001191,
+        -0.00895883606818,
+        -0.00791315785221,
+        -0.00486625437708,
+        -0.00329251751279,
+        -0.00235481488325,
+        -0.00175870527475,
+        -0.00135681133278,
+        -0.00107459847699,
+        -0.00086944475948,
+        -0.00071607115121,
+        -0.00059867100093,
+        -0.00050699063239,
+        -0.00043415191279,
+        -0.00037541003286,
+        -0.00032741060100,
+        -0.00028773091482,
+        -0.00025458777519,
+        -0.00022664642371,
+        -0.00020289261022,
+        -0.00018254510830,
+        -0.00016499474461,
+        -0.00014976117168,
+        -0.00013646173946,
+        -0.00012478875823,
+        -0.00011449267279,
+        -0.00010536946150,
+        -0.00009725109376
+      ]
+
+conformalCanonicalXY :: Double -> Double -> V3 Double
+conformalCanonicalXY x y =
+  let kxy = abs y > abs x
+
+      (xc, yc) =
+        if kxy
+          then (1 - abs y, 1 - abs x)
+          else (1 - abs x, 1 - abs y)
+
+      zBase = ((xc :+ 0) + (0.0 :+ yc)) / 2
+
+      zPow = zBase ^ (4 :: Int)
+
+      w0 = aSeries zPow
+
+      cc = ((sqrt 3 - 1) / 2 :+ 0) * ((-1) :+ 1)
+
+      w1 = cbrt (0 :+ 1) * cbrt (w0 * (0 :+ 1))
+
+      xw :+ yw = (w1 - sqrt 3 + 1) / (((-1) :+ 1) + cc * w1)
+
+      h = 2 / (1 + xw * xw + yw * yw)
+
+      xs0 = xw * h
+      ys0 = yw * h
+
+      (xs1, ys1) = if kxy then (ys0, xs0) else (xs0, ys0)
+   in V3 (signum x * xs1) (signum y * ys1) (h - 1)
+
+-- Rančić-Purser-Mesinger conformal cubed sphere: https://rmets.onlinelibrary.wiley.com/doi/10.1002/qj.49712253209
+conformal :: V3 Double -> V3 Double -> V3 Double -> Double -> Double -> (Double, Double)
+conformal c00 c01 c10 a b =
+  let v0 = c01 ^-^ c00
+      v1 = c10 ^-^ c00
+      p = c00 ^+^ (a *^ v0) ^+^ (b *^ v1)
+
+      u = 0.5 *^ v0
+      v = 0.5 *^ v1
+
+      faceCenter = c00 ^+^ (0.5 *^ v0) ^+^ (0.5 *^ v1)
+      w = normalize faceCenter
+
+      x = u `dot` p
+      y = v `dot` p
+
+      V3 xs ys zs = conformalCanonicalXY x y
+
+      sGlobal = normalize $ (xs *^ u) ^+^ (ys *^ v) ^+^ (zs *^ w)
+      V3 gx gy gz = sGlobal
+
+      phi = asin gz
+      theta = atan2 gx gy
+   in (phi, theta)
+
+cbrt :: (RealFloat a) => Complex a -> Complex a
+cbrt z = mkPolar (magnitude z ** (1 / 3)) (phase z / 3)
 
 dynamicPixelMapI ::
   ( forall px.
@@ -192,12 +289,6 @@ dynamicPixelMapI f = aux
     aux (ImageYCbCr8 i) = Right $ ImageYCbCr8 (f i)
     aux (ImageCMYK8 i) = Right $ ImageCMYK8 (f i)
     aux (ImageCMYK16 i) = Right $ ImageCMYK16 (f i)
-
--- genCube :: Double -> V3 Double -> [V3 Double]
--- genCube theta (normalize -> axis) =
---   let r = Quaternion (cos $ theta / 2) (sin (theta / 2) *^ axis)
---       vs = V3 <$> [-1, 1] <*> [-1, 1] <*> [-1, 1]
---    in (rotate r <$>) vs
 
 genCube :: Quaternion Double -> [V3 Double]
 genCube (normalize -> r) =
@@ -349,50 +440,61 @@ hImagP = (*) <$> fmap (flip Quaternion zero) numP <*> skipSpaces hUnitP
 
 hExprP :: (RealFloat a, Read a) => Parser (Quaternion a)
 hExprP = chainl1 hSummandP addOpP
-
-hSummandP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hSummandP = chainl1 hFactorP multOpP
-
-hFactorP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hFactorP = chainr1 hAtomP powerOpP
-
-hAtomP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hAtomP =
-  skipSpaces $
-    hUnitP
-      <|> hImagP
-      <|> fmap (flip Quaternion zero) numP
-      <|> funcP <*> hAtomP
-      <|> constP
-      <|> (charP '(' *> hExprP <* charP ')')
+  where
+    hSummandP = chainl1 hFactorP multOpP
+    hFactorP = chainr1 hAtomP powerOpP
+    hAtomP =
+      skipSpaces $
+        hUnitP
+          <|> hImagP
+          <|> fmap (flip Quaternion zero) numP
+          <|> funcP <*> hAtomP
+          <|> constP
+          <|> (charP '(' *> hExprP <* charP ')')
 
 data GlobeOptions = GlobeOptions
   { globeFile :: FilePath,
     outputPath :: FilePath,
     mSize :: Maybe Int,
-    mRotation :: Maybe (Quaternion Double)
+    mRotation :: Maybe (Quaternion Double),
+    mProjectionMode :: Maybe ProjectionMode
   }
 
 parseGlobeOptions :: O.ParserInfo GlobeOptions
 parseGlobeOptions =
   let parser = do
-        globeFile <- O.strOption (O.short 'g' <> O.long "globe" <> O.metavar "GLOBEFILE")
-        outputPath <- O.strOption (O.short 'o' <> O.long "output" <> O.metavar "OUTPUTPATH")
-        mSize <- fmap (>>= readMaybe) . O.optional $ O.strOption (O.short 's' <> O.long "size" <> O.metavar "SIZE")
-        mRotation <- fmap (>>= runParser hExprP) . O.optional $ O.strOption (O.short 'r' <> O.long "rotation" <> O.metavar "ROTATION")
+        globeFile <-
+          O.strOption $
+            O.short 'i' <> O.long "input" <> O.metavar "INPUT" <> O.help "Input image"
+        outputPath <-
+          O.strOption $
+            O.short 'o' <> O.long "output" <> O.metavar "OUTPUTPATH" <> O.help "Path prefix for output images"
+        mSize <-
+          fmap (>>= readMaybe) . O.optional . O.strOption $
+            O.short 's' <> O.long "size" <> O.metavar "SIZE" <> O.help "Output image size"
+        mRotation <-
+          fmap (>>= runParser hExprP) . O.optional . O.strOption $
+            O.short 'r' <> O.long "rotation" <> O.metavar "ROTATION" <> O.help "Quaternion expression for globe rotation"
+        mProjectionMode <-
+          O.optional $
+            (O.flag' Gnomonic $ O.long "gnomonic" <> O.help "Use gnomonic projection")
+              <|> (O.flag' EqualArea $ O.long "equal-area" <> O.help "Use equal-area projection")
+              <|> (O.flag' Conformal $ O.long "conformal" <> O.help "Use conformal projection")
         pure GlobeOptions {..}
-   in O.info (parser O.<**> O.helper) (O.fullDesc <> O.progDesc "Create a cube-shaped globe from GLOBEFILE")
+   in O.info (parser O.<**> O.helper) (O.fullDesc <> O.progDesc "Create a cube-shaped globe from INPUT")
 
 main :: IO ()
 main = do
   GlobeOptions {..} <- O.execParser parseGlobeOptions
   let size = fromMaybe 512 mSize
       rotation = fromMaybe 1 mRotation
+      projectionMode = fromMaybe Gnomonic mProjectionMode
       cube = genCube rotation
   print rotation
+  print projectionMode
   Right globe <- readImage globeFile
   forM_ cubeFaces \face -> do
     let globeSample =
           either error id $
-            dynamicPixelMapI (uncurry3 (projectCubeSphere roscaPlonka size size) . mapTriple (cube !!) $ faceToVertices face) globe
+            dynamicPixelMapI (uncurry3 (projectCubeSphere sampleBicubic projectionMode size size) . mapTriple (cube !!) $ faceToVertices face) globe
     saveTiffImage (outputPath ++ '_' : cubeComponentsToString face <.> "tiff") globeSample
