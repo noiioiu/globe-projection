@@ -365,11 +365,14 @@ eof = L.do
   s <- get @_ @Parser
   if null s then pure () else empty
 
-numP :: (Read a) => Parser a
+numP :: (Read a, Fractional a) => Parser a
 numP = L.do
   sgn <- optional $ charP '-'
-  intPart <- some (predP isDigit)
+  intPartM <- optional $ some $ (predP isDigit)
   fracPart <- optional $ (:) <$> charP '.' <*> many (predP isDigit)
+  intPart <- case (intPartM, fracPart) of
+    (Nothing, Nothing) -> empty @Parser
+    _ -> pure $ fromMaybe "0" intPartM
   expPart <- optional $ (:) <$> predP ((== 'e') . toLower) <*> ((.:) <$> optional (charP '-') <*> many (predP isDigit))
   d <- readMaybe (sgn .: (intPart ++. fracPart ++. expPart))
   pure d
@@ -441,9 +444,6 @@ hUnitP =
 
 skipSpaces :: Parser a -> Parser a
 skipSpaces p = many (predP isSpace) *> p <* many (predP isSpace)
-
-hImagP :: (Num a, RealFloat a, Read a) => Parser (Quaternion a)
-hImagP = (*) <$> fmap (flip Quaternion zero) numP <*> skipSpaces hUnitP
 
 hExprP :: (RealFloat a, Read a) => Parser (Quaternion a)
 hExprP = chainl1 hSummandP addOpP
