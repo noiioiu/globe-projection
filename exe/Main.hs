@@ -347,9 +347,12 @@ instance (Functor f, LeftModule (StateT String Maybe) f) => LeftModule Parser f 
 instance (Functor f, RightModule (StateT String Maybe) f) => RightModule Parser f where
   rjoin = rjoin . fmap getParser
 
+getText :: Parser String
+getText = get
+
 predP :: (Char -> Bool) -> Parser Char
 predP p = L.do
-  s <- get @_ @Parser
+  s <- getText
   (c', s') <- uncons s
   put @_ @Parser s'
   if p c' then pure c' else empty
@@ -362,18 +365,21 @@ stringP = traverse charP
 
 eof :: Parser ()
 eof = L.do
-  s <- get @_ @Parser
+  s <- getText
   if null s then pure () else empty
+
+lookaheadChar :: Parser Char
+lookaheadChar = getText >>= \s -> uncons s L.>>= pure . fst
 
 numP :: (Read a, Fractional a) => Parser a
 numP = L.do
   sgn <- optional $ charP '-'
-  intPartM <- optional $ some $ (predP isDigit)
+  intPart <-
+    lookaheadChar >>= \case
+      '.' -> pure "0"
+      _ -> some $ predP isDigit
   fracPart <- optional $ (:) <$> charP '.' <*> many (predP isDigit)
-  intPart <- case (intPartM, fracPart) of
-    (Nothing, Nothing) -> empty @Parser
-    _ -> pure $ fromMaybe "0" intPartM
-  expPart <- optional $ (:) <$> predP ((== 'e') . toLower) <*> ((.:) <$> optional (charP '-') <*> many (predP isDigit))
+  expPart <- optional $ (:) <$> predP ((== 'e') . toLower) <*> ((.:) <$> optional (predP (`elem` "-+")) <*> many (predP isDigit))
   d <- readMaybe (sgn .: (intPart ++. fracPart ++. expPart))
   pure d
 
