@@ -1,6 +1,5 @@
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE IncoherentInstances #-}
 {-# LANGUAGE QualifiedDo #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -334,13 +333,13 @@ newtype Parser a = Parser {getParser :: StateT String Maybe a}
 runParser :: Parser a -> String -> Maybe a
 runParser = evalStateT . getParser
 
-instance (Monad m, LeftModule m (StateT String Maybe)) => LeftModule m Parser where
+instance {-# INCOHERENT #-} (Monad m, LeftModule m (StateT String Maybe)) => LeftModule m Parser where
   ljoin = Parser . ljoin . fmap getParser
 
-instance (Monad m, RightModule m (StateT String Maybe)) => RightModule m Parser where
+instance {-# INCOHERENT #-} (Monad m, RightModule m (StateT String Maybe)) => RightModule m Parser where
   rjoin = Parser . rjoin . getParser
 
-instance (Functor f, LeftModule (StateT String Maybe) f) => LeftModule Parser f where
+instance {-# INCOHERENT #-} (Functor f, LeftModule (StateT String Maybe) f) => LeftModule Parser f where
   ljoin = ljoin . getParser
 
 instance (Functor f, RightModule (StateT String Maybe) f) => RightModule Parser f where
