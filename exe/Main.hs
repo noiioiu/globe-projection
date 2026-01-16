@@ -129,31 +129,6 @@ gnomonic c00 c01 c10 a b =
       theta = atan2 x y
    in (phi, theta)
 
--- Roşca–Plonka area-preserving map T : (-beta,beta)^2 -> R^2, where beta = sqrt(pi/6)
-tMap :: Double -> Double -> (Double, Double)
-tMap x y
-  | nearZero x && nearZero y = (0, 0)
-  | abs y <= abs x =
-      let a = (y * pi) / (12 * x)
-          denom = sqrt $ sqrt 2 - cos a
-          s = (sqrt (sqrt 2) * x) / sqrt (pi / 6)
-          x1 = s * ((sqrt 2 * cos a) - 1) / denom
-          y1 = s * (sqrt 2 * sin a) / denom
-       in (x1, y1)
-  | otherwise =
-      let a = (x * pi) / (12 * y)
-          denom = sqrt $ sqrt 2 - cos a
-          s = (sqrt (sqrt 2) * y) / sqrt (pi / 6)
-          x1 = s * (sqrt 2 * sin a) / denom
-          y1 = s * ((sqrt 2 * cos a) - 1) / denom
-       in (x1, y1)
-
-invLambert :: Double -> Double -> V3 Double
-invLambert x y =
-  let r2 = x * x + y * y
-      k = sqrt $ 1 - r2 / 4
-   in V3 (x * k) (y * k) (1 - r2 / 2)
-
 -- Roşca-Plonka equal-area projection: https://num.math.uni-goettingen.de/plonka/pdfs/cubsphere3.pdf
 equalArea :: V3 Double -> V3 Double -> V3 Double -> Double -> Double -> (Double, Double)
 equalArea c00 c01 c10 a b =
@@ -163,9 +138,28 @@ equalArea c00 c01 c10 a b =
       e1 = normalize v1
       n = normalize $ c00 .+^ (0.5 *^ v0) .+^ (0.5 *^ v1)
       toGlobal (V3 lx ly lz) = (lx *^ e0) .+^ (ly *^ e1) .+^ (lz *^ n)
+      invLambert xi eta =
+        let r2 = xi * xi + eta * eta
+            k = sqrt $ 1 - r2 / 4
+         in V3 (xi * k) (eta * k) (1 - r2 / 2)
       x = (2 * a - 1) * sqrt (pi / 6)
       y = (2 * b - 1) * sqrt (pi / 6)
-      (xL, yL) = tMap x y
+      (xL, yL)
+        | nearZero x && nearZero y = (0, 0)
+        | abs y <= abs x =
+            let t = (y * pi) / (12 * x)
+                denom = sqrt $ sqrt 2 - cos t
+                s = (sqrt (sqrt 2) * x) / sqrt (pi / 6)
+                x1 = s * ((sqrt 2 * cos t) - 1) / denom
+                y1 = s * (sqrt 2 * sin t) / denom
+             in (x1, y1)
+        | otherwise =
+            let t = (x * pi) / (12 * y)
+                denom = sqrt $ sqrt 2 - cos t
+                s = (sqrt (sqrt 2) * y) / sqrt (pi / 6)
+                x1 = s * (sqrt 2 * sin t) / denom
+                y1 = s * ((sqrt 2 * cos t) - 1) / denom
+             in (x1, y1)
       V3 gx gy gz = normalize . toGlobal $ invLambert xL yL
       phi = asin gz
       theta = atan2 gx gy
