@@ -5,6 +5,8 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
+{- HLINT ignore "Redundant pure" -}
+
 module Main (main) where
 
 -- This should probably be split into multiple files
@@ -18,6 +20,7 @@ import Control.Monad.Action.Left qualified as L
 import Control.Monad.State
 import Data.Char
 import Data.Complex
+import Data.Functor
 import Data.List
 import Data.Maybe
 import Data.Ord
@@ -287,7 +290,7 @@ dynamicPixelMapI f = aux
 genCube :: Quaternion Double -> [V3 Double]
 genCube (normalize -> r) =
   let vs = V3 <$> [-1, 1] <*> [-1, 1] <*> [-1, 1]
-   in (rotate r <$>) vs
+   in rotate r <$> vs
 
 data CubeComponent = Zero | X | One deriving (Show, Eq, Ord, Enum, Bounded)
 
@@ -319,7 +322,7 @@ faceToVertices (V3 X X a) = mapTriple vertexToIntegral (V3 Zero Zero a, V3 (comp
 faceToVertices _ = error "Not a face"
 
 cubeComponentsToString :: (Foldable f, Functor f) => f CubeComponent -> String
-cubeComponentsToString = foldr (:) "" . fmap \case Zero -> '0'; X -> 'X'; One -> '1'
+cubeComponentsToString = foldr ((:) . (\case Zero -> '0'; X -> 'X'; One -> '1')) ""
 
 newtype Parser a = Parser {getParser :: StateT String Maybe a}
   deriving (Functor, Applicative, Alternative, Monad, MonadState String)
@@ -342,36 +345,36 @@ instance (Functor f, RightModule (StateT String Maybe) f) => RightModule Parser 
 getText :: Parser String
 getText = get
 
-predP :: (Char -> Bool) -> Parser Char
-predP p = L.do
+satisfy :: (Char -> Bool) -> Parser Char
+satisfy p = L.do
   s <- getText
-  (c', s') <- uncons s
+  (c, s') <- uncons s
   put @_ @Parser s'
-  if p c' then pure c' else empty
+  if p c then pure c else empty
 
-charP :: Char -> Parser Char
-charP = predP . (==)
+char :: Char -> Parser Char
+char = satisfy . (==)
 
-stringP :: String -> Parser String
-stringP = traverse charP
+string :: String -> Parser String
+string = traverse char
 
 eof :: Parser ()
-eof = L.do
+eof = do
   s <- getText
-  if null s then pure () else empty
+  unless (null s) empty
 
 lookaheadChar :: Parser Char
 lookaheadChar = getText >>= \s -> uncons s L.>>= pure . fst
 
-numP :: (Read a, Fractional a) => Parser a
-numP = L.do
-  sgn <- optional $ charP '-'
+num :: (Read a, Fractional a) => Parser a
+num = L.do
+  sgn <- optional $ char '-'
   intPart <-
     lookaheadChar >>= \case
       '.' -> pure "0"
-      _ -> some $ predP isDigit
-  fracPart <- optional $ (:) <$> charP '.' <*> many (predP isDigit)
-  expPart <- optional $ (:) <$> predP ((== 'e') . toLower) <*> ((.:) <$> optional (predP (`elem` "-+")) <*> many (predP isDigit))
+      _ -> some $ satisfy isDigit
+  fracPart <- optional $ (:) <$> char '.' <*> many (satisfy isDigit)
+  expPart <- optional $ (:) <$> satisfy ((== 'e') . toLower) <*> ((.:) <$> optional (satisfy (`elem` "-+")) <*> many (satisfy isDigit))
   d <- readMaybe (sgn .: (intPart ++. fracPart ++. expPart))
   pure d
 
@@ -402,61 +405,61 @@ chainr1 p o =
       )
         <|> pure x
 
-addOpP :: (Num a) => Parser (a -> a -> a)
-addOpP = charP '+' *> pure (+) <|> charP '-' *> pure (-)
+addOp :: (Num a) => Parser (a -> a -> a)
+addOp = char '+' $> (+) <|> char '-' $> (-)
 
-multOpP :: (Fractional a) => Parser (a -> a -> a)
-multOpP = charP '*' *> pure (*) <|> charP '/' *> pure (/)
+multOp :: (Fractional a) => Parser (a -> a -> a)
+multOp = char '*' $> (*) <|> char '/' $> (/)
 
-powerOpP :: (Floating a) => Parser (a -> a -> a)
-powerOpP = (stringP "^" <|> stringP "**") *> pure (**)
+powerOp :: (Floating a) => Parser (a -> a -> a)
+powerOp = (string "^" <|> string "**") $> (**)
 
-funcP :: (Floating a) => Parser (a -> a)
-funcP =
-  stringP "exp" *> pure exp
-    <|> stringP "log" *> pure log
-    <|> stringP "sqrt" *> pure sqrt
-    <|> stringP "sin" *> pure sin
-    <|> stringP "cos" *> pure cos
-    <|> stringP "tan" *> pure tan
-    <|> stringP "asin" *> pure asin
-    <|> stringP "acos" *> pure acos
-    <|> stringP "atan" *> pure atan
-    <|> stringP "sinh" *> pure sinh
-    <|> stringP "cosh" *> pure cosh
-    <|> stringP "tanh" *> pure tanh
-    <|> stringP "asinh" *> pure asinh
-    <|> stringP "acosh" *> pure acosh
-    <|> stringP "atanh" *> pure atanh
+func :: (Floating a) => Parser (a -> a)
+func =
+  (string "exp" $> exp)
+    <|> string "log" $> log
+    <|> string "sqrt" $> sqrt
+    <|> string "sin" $> sin
+    <|> string "cos" $> cos
+    <|> string "tan" $> tan
+    <|> string "asin" $> asin
+    <|> string "acos" $> acos
+    <|> string "atan" $> atan
+    <|> string "sinh" $> sinh
+    <|> string "cosh" $> cosh
+    <|> string "tanh" $> tanh
+    <|> string "asinh" $> asinh
+    <|> string "acosh" $> acosh
+    <|> string "atanh" $> atanh
 
 constP :: (Floating a) => Parser a
 constP =
-  stringP "pi" *> pure pi
-    <|> stringP "e" *> pure (exp 1)
+  string "pi" $> pi
+    <|> string "e" $> exp 1
 
 hUnitP :: (Num a) => Parser (Quaternion a)
 hUnitP =
-  charP 'i' *> pure (Quaternion 0 $ V3 1 0 0)
-    <|> charP 'j' *> pure (Quaternion 0 $ V3 0 1 0)
-    <|> charP 'k' *> pure (Quaternion 0 $ V3 0 0 1)
+  char 'i' $> Quaternion 0 (V3 1 0 0)
+    <|> char 'j' $> Quaternion 0 (V3 0 1 0)
+    <|> char 'k' $> Quaternion 0 (V3 0 0 1)
 
 skipSpaces :: Parser a -> Parser a
-skipSpaces p = many (predP isSpace) *> p <* many (predP isSpace)
+skipSpaces p = many (satisfy isSpace) *> p <* many (satisfy isSpace)
 
 hExprP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hExprP = chainl1 hSummandP addOpP
+hExprP = chainl1 hSummandP addOp
   where
-    hSummandP = chainl1 hFactorP multOpP
-    hFactorP = chainr1 (chainr1 hOperandP powerOpP) (pure (*) <* many (predP isSpace))
+    hSummandP = chainl1 hFactorP multOp
+    hFactorP = chainr1 (chainr1 hOperandP powerOp) ((*) <$ many (satisfy isSpace))
     hOperandP =
       skipSpaces $
         hUnitP
           <|> hUnitP
-          <|> fmap (flip Quaternion zero . (* (pi / 180))) numP <* many (predP isSpace) <* charP 'd'
-          <|> fmap (flip Quaternion zero) numP
-          <|> funcP <*> hOperandP
+          <|> fmap (flip Quaternion zero . (* (pi / 180))) num <* many (satisfy isSpace) <* char 'd'
+          <|> fmap (`Quaternion` zero) num
+          <|> func <*> hOperandP
           <|> constP
-          <|> (charP '(' *> hExprP <* charP ')')
+          <|> (char '(' *> hExprP <* char ')')
 
 data GlobeOptions = GlobeOptions
   { globeFile :: FilePath,
@@ -484,13 +487,13 @@ parseGlobeOptions =
             O.short 'r' <> O.long "rotation" <> O.metavar "ROTATION" <> O.help "Quaternion expression for globe rotation"
         mProjectionMode <-
           O.optional $
-            (O.flag' Gnomonic $ O.long "gnomonic" <> O.help "Use gnomonic projection")
-              <|> (O.flag' EqualArea $ O.long "equal-area" <> O.help "Use equal-area projection")
-              <|> (O.flag' Conformal $ O.long "conformal" <> O.help "Use conformal projection")
+            O.flag' Gnomonic (O.long "gnomonic" <> O.help "Use gnomonic projection")
+              <|> O.flag' EqualArea (O.long "equal-area" <> O.help "Use equal-area projection")
+              <|> O.flag' Conformal (O.long "conformal" <> O.help "Use conformal projection")
         mInterpolationMode <-
           O.optional $
-            (O.flag' Bilinear $ O.long "bilinear" <> O.help "Use bilinear interpolation")
-              <|> (O.flag' Bicubic $ O.long "bicubic" <> O.help "Use bicubic interpolation")
+            O.flag' Bilinear (O.long "bilinear" <> O.help "Use bilinear interpolation")
+              <|> O.flag' Bicubic (O.long "bicubic" <> O.help "Use bicubic interpolation")
         pure GlobeOptions {..}
    in O.info (parser O.<**> O.helper) (O.fullDesc <> O.progDesc "Create a cube-shaped globe from INPUT")
 
