@@ -17,7 +17,8 @@ import Control.Lens hiding (uncons, (<.>))
 import Control.Monad
 import Control.Monad.Action
 import Control.Monad.Action.Left qualified as L
-import Control.Monad.State
+import Control.Monad.State (MonadState, State, StateT, evalStateT)
+import Control.Monad.State qualified as State
 import Data.Char
 import Data.Complex
 import Data.Functor
@@ -342,14 +343,17 @@ instance {-# INCOHERENT #-} (Functor f, LeftModule (StateT String Maybe) f) => L
 instance (Functor f, RightModule (StateT String Maybe) f) => RightModule Parser f where
   rjoin = rjoin . fmap getParser
 
-getText :: Parser String
-getText = get
+get :: State s s
+get = State.get
+
+put :: s -> State s ()
+put = State.put
 
 satisfy :: (Char -> Bool) -> Parser Char
 satisfy p = L.do
-  s <- getText
+  s <- get
   (c, s') <- uncons s
-  put @_ @Parser s'
+  put s'
   if p c then pure c else empty
 
 char :: Char -> Parser Char
@@ -359,12 +363,12 @@ string :: String -> Parser String
 string = traverse char
 
 eof :: Parser ()
-eof = do
-  s <- getText
+eof = L.do
+  s <- get
   unless (null s) empty
 
 lookaheadChar :: Parser Char
-lookaheadChar = getText >>= \s -> uncons s L.>>= pure . fst
+lookaheadChar = get L.>>= \s -> uncons s L.>>= pure . fst
 
 num :: (Read a, Fractional a) => Parser a
 num = L.do
@@ -432,13 +436,13 @@ func =
     <|> string "acosh" $> acosh
     <|> string "atanh" $> atanh
 
-constP :: (Floating a) => Parser a
-constP =
+constant :: (Floating a) => Parser a
+constant =
   string "pi" $> pi
     <|> string "e" $> exp 1
 
-hUnitP :: (Num a) => Parser (Quaternion a)
-hUnitP =
+hUnit :: (Num a) => Parser (Quaternion a)
+hUnit =
   char 'i' $> Quaternion 0 (V3 1 0 0)
     <|> char 'j' $> Quaternion 0 (V3 0 1 0)
     <|> char 'k' $> Quaternion 0 (V3 0 0 1)
@@ -446,20 +450,20 @@ hUnitP =
 skipSpaces :: Parser a -> Parser a
 skipSpaces p = many (satisfy isSpace) *> p <* many (satisfy isSpace)
 
-hExprP :: (RealFloat a, Read a) => Parser (Quaternion a)
-hExprP = chainl1 hSummandP addOp
+hExpr :: (RealFloat a, Read a) => Parser (Quaternion a)
+hExpr = chainl1 hSummandP addOp
   where
     hSummandP = chainl1 hFactorP multOp
     hFactorP = chainr1 (chainr1 hOperandP powerOp) ((*) <$ many (satisfy isSpace))
     hOperandP =
       skipSpaces $
-        hUnitP
-          <|> hUnitP
+        hUnit
+          <|> hUnit
           <|> fmap (flip Quaternion zero . (* (pi / 180))) num <* many (satisfy isSpace) <* char 'd'
           <|> fmap (`Quaternion` zero) num
           <|> func <*> hOperandP
-          <|> constP
-          <|> (char '(' *> hExprP <* char ')')
+          <|> constant
+          <|> (char '(' *> hExpr <* char ')')
 
 data GlobeOptions = GlobeOptions
   { globeFile :: FilePath,
@@ -483,7 +487,7 @@ parseGlobeOptions =
           fmap (>>= readMaybe) . O.optional . O.strOption $
             O.short 's' <> O.long "size" <> O.metavar "SIZE" <> O.help "Output image size"
         mRotation <-
-          fmap (>>= runParser (hExprP <* eof)) . O.optional . O.strOption $
+          fmap (>>= runParser (hExpr <* eof)) . O.optional . O.strOption $
             O.short 'r' <> O.long "rotation" <> O.metavar "ROTATION" <> O.help "Quaternion expression for globe rotation"
         mProjectionMode <-
           O.optional $
